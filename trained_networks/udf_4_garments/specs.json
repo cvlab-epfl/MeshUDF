@@ -1,0 +1,41 @@
+{
+  "Description" : "This experiment learns a shape representation for 4 pieces of garments",
+  "ExperimentsName" : "udf",
+  "NormType": "in",
+  "Depth": 20,
+  "NumberOfLayersToFreeze": 0,
+  "NetworkDecoder" : "deep_udf_decoder",
+  "NetworkSpecs" : {
+    "dims" : [ 512, 512, 512, 512, 512],
+    "dropout" : [0, 1, 2, 3],
+    "dropout_prob" : 0.0,
+    "norm_layers" : [0, 1, 2, 3],
+    "xyz_in_all" : false,
+    "use_tanh" : false,
+    "latent_dropout" : false,
+    "weight_norm" : true,
+    "fourier" : false
+    },
+  "CodeLength" : 16,
+  "NumEpochs" : 4001,
+  "SnapshotFrequency" : 250,
+  "LearningRateSchedule" : [
+    {
+      "Type" : "Step",
+      "Initial" : 0.0005,
+      "Interval" : 500,
+      "Factor" : 0.5
+    },
+    {
+      "Type" : "Step",
+      "Initial" : 0.001,
+      "Interval" : 500,
+      "Factor" : 0.5
+    }],
+  "SamplesPerScene" : 8192,
+  "ClampDF" : true,
+  "ClampingDistance" : 0.1,
+  "CodeRegularization" : true,
+  "CodeRegularizationLambda" : 1e-4,
+  "EPS" : 0.0
+}
