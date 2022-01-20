@@ -80,7 +80,7 @@ def get_udf_normals_grid_slow(decoder, latent_vec, N=56, max_batch=int(2 ** 20),
     #
     ## THEN: compute gradients only where needed,
     # ie. where the predicted df value is small
-    max_batch = max_batch / 4
+    max_batch = max_batch // 4
     norm_mask = samples[:, 3] < 2 * voxel_size
     norm_idx = torch.where(norm_mask)[0]
     head, num_samples = 0, norm_idx.shape[0]
