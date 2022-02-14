@@ -1,6 +1,7 @@
 import argparse
 import torch
 import numpy as np
+from scipy.sparse import coo_matrix
 import trimesh
 from torch.nn import functional as F
 import sys
@@ -46,7 +47,7 @@ def get_udf_normals_grid_slow(decoder, latent_vec, N=56, max_batch=int(2 ** 20),
     # to be the x, y, z index
     samples[:, 2] = overall_index % N
     samples[:, 1] = torch.div(overall_index, N, rounding_mode='floor') % N
-    samples[:, 0] = torch.div(torch.div(overall_index, N, rounding_mode='floor'), N) % N
+    samples[:, 0] = torch.div(torch.div(overall_index, N, rounding_mode='floor'), N, rounding_mode='floor') % N
     # transform first 3 columns
     # to be the x, y, z coordinate
     samples[:, 0] = (samples[:, 0] * voxel_size) + voxel_origin[2]
@@ -259,15 +260,21 @@ def get_mesh_udf_fast(decoder, latent_vec, samples=None, indices=None, N_MC=128,
             neighbours[v].append(u)
         border_vertices = np.array(list(neighbours.keys()))
 
-        ## Build a dense matrix for computing laplacian
-        ## TODO: do it with a sparse matrix to be even faster
-        dense = np.zeros((len(border_vertices), len(filtered_mesh.vertices)))
+        # Build a sparse matrix for computing laplacian
+        pos_i, pos_j = [], []
         for k, ns in enumerate(neighbours.values()):
-            dense[k, ns] = 1
+            for j in ns:
+                pos_i.append(k)
+                pos_j.append(j)
 
+        sparse = coo_matrix((np.ones(len(pos_i)),   # put ones
+                            (pos_i, pos_j)),        # at these locations
+                            shape=(len(border_vertices), len(filtered_mesh.vertices)))
+
+        # Smoothing operation:
         lambda_ = 0.3
         for _ in range(5):
-            border_neighbouring_averages = np.dot(dense, filtered_mesh.vertices) / dense.sum(axis=1, keepdims=True)
+            border_neighbouring_averages = sparse @ filtered_mesh.vertices / sparse.sum(axis=1)
             laplacian = border_neighbouring_averages - filtered_mesh.vertices[border_vertices]
             filtered_mesh.vertices[border_vertices] = filtered_mesh.vertices[border_vertices] + lambda_ * laplacian
 
