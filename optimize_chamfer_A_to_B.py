@@ -45,8 +45,8 @@ def get_udf_normals_grid_slow(decoder, latent_vec, N=56, max_batch=int(2 ** 20),
     # transform first 3 columns
     # to be the x, y, z index
     samples[:, 2] = overall_index % N
-    samples[:, 1] = (overall_index // N) % N
-    samples[:, 0] = ((overall_index // N) // N) % N
+    samples[:, 1] = torch.div(overall_index, N, rounding_mode='floor') % N
+    samples[:, 0] = torch.div(torch.div(overall_index, N, rounding_mode='floor'), N) % N
     # transform first 3 columns
     # to be the x, y, z coordinate
     samples[:, 0] = (samples[:, 0] * voxel_size) + voxel_origin[2]
@@ -80,7 +80,7 @@ def get_udf_normals_grid_slow(decoder, latent_vec, N=56, max_batch=int(2 ** 20),
     #
     ## THEN: compute gradients only where needed,
     # ie. where the predicted df value is small
-    max_batch = max_batch / 4
+    max_batch = max_batch // 4
     norm_mask = samples[:, 3] < 2 * voxel_size
     norm_idx = torch.where(norm_mask)[0]
     head, num_samples = 0, norm_idx.shape[0]
