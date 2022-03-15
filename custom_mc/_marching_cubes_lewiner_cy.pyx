@@ -23,7 +23,10 @@ by Almar Klein in 2012. Adapted for scikit-image in 2016.
 import numpy as np
 cimport numpy as np
 import cython
+from libcpp.deque cimport deque
 np.import_array()
+from cpython cimport array
+import array
 
 # Enable low level memory management
 from libc.stdlib cimport malloc, free
@@ -165,8 +168,8 @@ cdef class Cell:
 
     # Arrays with face information
     cdef int *faceLayer # The current facelayer (reference-copy of one of the below)
-    cdef int *faceLayer1 # The actual first face layer
-    cdef int *faceLayer2 # The actual second face layer
+    # cdef int *faceLayer1 # The actual first face layer
+    # cdef int *faceLayer2 # The actual second face layer
 
     # Stuff to store the output vertices
     cdef float *_vertices
@@ -186,20 +189,28 @@ cdef class Cell:
         self.nx, self.ny, self.nz = nx, ny, nz
 
         # Allocate face layers
-        self.faceLayer1 = <int *>malloc(self.nx*self.ny*4 * sizeof(int))
-        self.faceLayer2 = <int *>malloc(self.nx*self.ny*4 * sizeof(int))
+        # self.faceLayer1 = <int *>malloc(self.nx*self.ny*4 * sizeof(int))
+        # self.faceLayer2 = <int *>malloc(self.nx*self.ny*4 * sizeof(int))
+        self.faceLayer = <int *>malloc(self.nx*self.ny*self.nz*4 * sizeof(int))
 
-        if (self.faceLayer1 is NULL or self.faceLayer2 is NULL or
+        # if (self.faceLayer1 is NULL or self.faceLayer2 is NULL or
+        #     self.vv is NULL or self.vg is NULL or self._vertices is NULL or
+        #     self._normals is NULL or self._values is NULL or
+        #     self._faces is NULL):
+        #     raise MemoryError()
+        if (self.faceLayer is NULL or
             self.vv is NULL or self.vg is NULL or self._vertices is NULL or
             self._normals is NULL or self._values is NULL or
             self._faces is NULL):
             raise MemoryError()
 
         cdef int i
-        for i in range(self.nx*self.ny*4):
-            self.faceLayer1[i] = -1
-            self.faceLayer2[i] = -1
-        self.faceLayer = self.faceLayer1
+        # for i in range(self.nx*self.ny*4):
+        #     self.faceLayer1[i] = -1
+        #     self.faceLayer2[i] = -1
+        # self.faceLayer = self.faceLayer1
+        for i in range(self.nx*self.ny*self.nz*4):
+            self.faceLayer[i] = -1
 
 
     def __cinit__(self):
@@ -209,8 +220,9 @@ cdef class Cell:
         self.vg = <double *>malloc(8*3 * sizeof(double))
 
         # Init face layers
-        self.faceLayer1 = NULL
-        self.faceLayer2 = NULL
+        # self.faceLayer1 = NULL
+        # self.faceLayer2 = NULL
+        self.faceLayer = NULL
 
         # Init vertices
         self._vertexCount = 0
@@ -235,8 +247,9 @@ cdef class Cell:
     def __dealloc__(self):
         free(self.vv)
         free(self.vg)
-        free(self.faceLayer1)
-        free(self.faceLayer2)
+        # free(self.faceLayer1)
+        # free(self.faceLayer2)
+        free(self.faceLayer)
         free(self._vertices)
         free(self._normals)
         free(self._values)
@@ -334,6 +347,9 @@ cdef class Cell:
         # Add face
         self._faces[self._faceCount] = index
         self._faceCount += 1
+        # if (self._faceCount < 18):
+        #     print(str(self._faces[self._faceCount-1]))
+        #     # print("f: " + str(self._faceCount) + " v: " + str(self._vertexCount))
         # Also update value
         if self.vmax > self._values[index]:
             self._values[index] = self.vmax
@@ -391,16 +407,16 @@ cdef class Cell:
 
     ## Called from marching cube function
 
-    cdef void new_z_value(self):
-        """ This method should be called each time a new z layer is entered.
-        We will swap the layers with face information and empty the second.
-        """
-        # Swap layers
-        self.faceLayer1, self.faceLayer2 = self.faceLayer2, self.faceLayer1
-        # Empty last
-        cdef int i
-        for i in range(self.nx*self.ny*4):
-            self.faceLayer2[i] = -1
+    # cdef void new_z_value(self):
+    #     """ This method should be called each time a new z layer is entered.
+    #     We will swap the layers with face information and empty the second.
+    #     """
+    #     # Swap layers
+    #     self.faceLayer1, self.faceLayer2 = self.faceLayer2, self.faceLayer1
+    #     # Empty last
+    #     cdef int i
+    #     for i in range(self.nx*self.ny*4):
+    #         self.faceLayer2[i] = -1
 
 
     cdef void set_cube(self,    double isovalue, int x, int y, int z, int step,
@@ -448,7 +464,68 @@ cdef class Cell:
         self.v12_calculated = 0
 
 
-    cdef void add_triangles(self, Lut lut, int lutIndex, int nt):
+    cdef bint check_triangles(self, Lut lut, int lutIndex, int nt):
+        """ Check triangles.
+
+        The vertices for the triangles are specified in the given
+        Lut at the specified index. There are nt triangles.
+
+        The reason that nt should be given is because it is often known
+        beforehand.
+
+        """
+
+        cdef int i, j
+        cdef int vi
+        cdef int result = 0
+        cdef list fl_values = []
+
+        self.prepare_for_adding_triangles()
+
+        for i in range(nt):
+            for j in range(3):
+                # Get two sides for each element in this vertex
+                vi = lut.get2(lutIndex, i*3+j)
+                index = self.get_index_in_facelayer(vi)
+                fl_value = self.faceLayer[index]
+                # print(index, fl_value)
+                if (not fl_value in fl_values) and fl_value >= 0:
+                    # print("True")
+                    result += 1
+                fl_values.append(fl_value)
+        # print(result)
+        return result
+
+
+    cdef bint check_triangles2(self, Lut lut, int lutIndex, int lutIndex2, int nt):
+        """ Same as check_triangles, except that now the geometry is in a LUT
+        with 3 dimensions, and an extra index is provided.
+
+        """
+        cdef int i, j
+        cdef int vi
+        cdef int result = 0
+        cdef list fl_values = []
+
+        self.prepare_for_adding_triangles()
+
+        for i in range(nt):
+            for j in range(3):
+                # Get two sides for each element in this vertex
+                vi = lut.get3(lutIndex, lutIndex2, i*3+j)
+                index = self.get_index_in_facelayer(vi)
+                fl_value = self.faceLayer[index]
+                # print(index, fl_value)
+                if (not fl_value in fl_values) and fl_value >= 0:
+                    # print("True")
+                    result += 1
+                fl_values.append(fl_value)
+        # print(result)
+        return result
+
+
+
+    cdef bint add_triangles(self, Lut lut, int lutIndex, int nt):
         """ Add triangles.
 
         The vertices for the triangles are specified in the given
@@ -461,6 +538,8 @@ cdef class Cell:
 
         cdef int i, j
         cdef int vi
+        cdef bint result = False
+        # cdef list indices = []
 
         self.prepare_for_adding_triangles()
 
@@ -469,15 +548,25 @@ cdef class Cell:
                 # Get two sides for each element in this vertex
                 vi = lut.get2(lutIndex, i*3+j)
                 self._add_face_from_edge_index(vi)
+                # index, fl_value = self._add_face_from_edge_index(vi)
+                # print(index, fl_value)
+                # if (not index in indices) and fl_value >= 0:
+                #     print(index)
+                #     print(indices)
+                #     result = True
+                # indices.append(index)
+        return result
 
 
-    cdef void add_triangles2(self, Lut lut, int lutIndex, int lutIndex2, int nt):
+    cdef bint add_triangles2(self, Lut lut, int lutIndex, int lutIndex2, int nt):
         """ Same as add_triangles, except that now the geometry is in a LUT
         with 3 dimensions, and an extra index is provided.
 
         """
         cdef int i, j
         cdef int vi
+        cdef bint result = False
+        # cdef list indices = []
 
         self.prepare_for_adding_triangles()
 
@@ -486,10 +575,18 @@ cdef class Cell:
                 # Get two sides for each element in this vertex
                 vi = lut.get3(lutIndex, lutIndex2, i*3+j)
                 self._add_face_from_edge_index(vi)
+                # index, fl_value = self._add_face_from_edge_index(vi)
+                # print(index, fl_value)
+                # if (not index in indices) and fl_value >= 0:
+                #     print(index)
+                #     print(indices)
+                #     result = True
+                # indices.append(index)
+        return result
 
     ## Used internally
 
-    cdef void _add_face_from_edge_index(self, int vi):
+    cdef (int, int) _add_face_from_edge_index(self, int vi):
         """ Add one face from an edge index. Only adds a face if the
         vertex already exists. Otherwise also adds a vertex and applies
         interpolation.
@@ -507,6 +604,7 @@ cdef class Cell:
         # Get index in the face layer and corresponding vertex number
         indexInFaceLayer = self.get_index_in_facelayer(vi)
         indexInVertexArray = self.faceLayer[indexInFaceLayer]
+        fl_value = self.faceLayer[indexInFaceLayer]
 
         # If we have the center vertex, we have things pre-calculated,
         # otherwise we need to interpolate.
@@ -574,7 +672,7 @@ cdef class Cell:
 #                         self.y + 0.5* dy1 + 0.5 * dy2,
 #                         self.z + 0.5* dz1 + 0.5 * dz2 )
 
-
+        return indexInFaceLayer, fl_value
 
     cdef int get_index_in_facelayer(self, int vi):
         """
@@ -605,20 +703,24 @@ cdef class Cell:
         """
 
         # Init indices, both are corrected below
-        cdef int i = self.nx * self.y + self.x  # Index of cube to get vertex at
+        # cdef int i = self.nx * self.y + self.x  # Index of cube to get vertex at
+        cdef int i = self.ny*self.nx*self.z + self.nx * self.y + self.x  # Index of cube to get vertex at
         cdef int j = 0 # Vertex number for that cell
         cdef int vi_ = vi
 
-        cdef int *faceLayer
+        # cdef int *faceLayer
+        cdef int k = 0 #Defines whether to go to a higher z or not
 
         # Select either upper or lower half
         if vi < 8:
             #  8 horizontal edges
             if vi < 4:
-                faceLayer = self.faceLayer1
+                # faceLayer = self.faceLayer1
+                k = 0
             else:
                 vi -= 4
-                faceLayer = self.faceLayer2
+                # faceLayer = self.faceLayer2
+                k = 1
 
             # Calculate actual index based on edge
             #if vi == 0: pass  # no step
@@ -632,7 +734,8 @@ cdef class Cell:
 
         elif vi < 12:
             # 4 vertical edges
-            faceLayer = self.faceLayer1
+            # faceLayer = self.faceLayer1
+            k = 0
             j = 2
 
             #if vi == 8: pass # no step
@@ -645,11 +748,15 @@ cdef class Cell:
 
         else:
             # center vertex
-            faceLayer = self.faceLayer1
+            # faceLayer = self.faceLayer1
+            k = 0
             j = 3
 
+        k = self.nx*self.ny * k
+        i = i+k
+
         # Store facelayer and return index
-        self.faceLayer = faceLayer # Dirty way of returning a value
+        # self.faceLayer = faceLayer # Dirty way of returning a value
         return 4*i + j
 
 
@@ -930,85 +1037,85 @@ cdef class LutProvider:
 
         self.SUBCONFIG13 = Lut(SUBCONFIG13)
 
-def marching_cubes(float[:, :, :] im not None, double isovalue,
-                   LutProvider luts, int st=1, int classic=0,
-                   np.ndarray[np.npy_bool, ndim=3, cast=True] mask=None):
-    """ marching_cubes(im, double isovalue, LutProvider luts, int st=1, int classic=0)
-    Main entry to apply marching cubes.
+# def marching_cubes(float[:, :, :] im not None, double isovalue,
+#                    LutProvider luts, int st=1, int classic=0,
+#                    np.ndarray[np.npy_bool, ndim=3, cast=True] mask=None):
+#     """ marching_cubes(im, double isovalue, LutProvider luts, int st=1, int classic=0)
+#     Main entry to apply marching cubes.
 
-    Masked version of marching cubes. This function will check a
-    masking array (same size as im) to decide if the algorithm must be
-    computed for a given voxel. This adds a small overhead that
-    rapidly gets compensated by the fewer computed cubes
-    Returns (vertices, faces, normals, values)
-    """
-    # Get dimemsnions
-    cdef int Nx, Ny, Nz
-    Nx, Ny, Nz = im.shape[2], im.shape[1], im.shape[0]
+#     Masked version of marching cubes. This function will check a
+#     masking array (same size as im) to decide if the algorithm must be
+#     computed for a given voxel. This adds a small overhead that
+#     rapidly gets compensated by the fewer computed cubes
+#     Returns (vertices, faces, normals, values)
+#     """
+#     # Get dimemsnions
+#     cdef int Nx, Ny, Nz
+#     Nx, Ny, Nz = im.shape[2], im.shape[1], im.shape[0]
 
-    # Create cell to use throughout
-    cdef Cell cell = Cell(luts, Nx, Ny, Nz)
+#     # Create cell to use throughout
+#     cdef Cell cell = Cell(luts, Nx, Ny, Nz)
 
-    # Typedef variables
-    cdef int x, y, z, x_st, y_st, z_st
-    cdef int nt
-    cdef int case, config, subconfig
-    cdef bint no_mask = mask is None
-    # Unfortunately specifying a step in range() significantly degrades
-    # performance. Therefore we use a while loop.
-    # we have:  max_x = Nx_bound + st + st - 1
-    #       ->  Nx_bound = max_allowable_x + 1 - 2 * st
-    #       ->  Nx_bound = Nx - 2 * st
-    assert st > 0
-    cdef int Nx_bound, Ny_bound, Nz_bound
-    Nx_bound, Ny_bound, Nz_bound = Nx - 2 * st, Ny - 2 * st, Nz - 2 * st  # precalculated index range
+#     # Typedef variables
+#     cdef int x, y, z, x_st, y_st, z_st
+#     cdef int nt
+#     cdef int case, config, subconfig
+#     cdef bint no_mask = mask is None
+#     # Unfortunately specifying a step in range() significantly degrades
+#     # performance. Therefore we use a while loop.
+#     # we have:  max_x = Nx_bound + st + st - 1
+#     #       ->  Nx_bound = max_allowable_x + 1 - 2 * st
+#     #       ->  Nx_bound = Nx - 2 * st
+#     assert st > 0
+#     cdef int Nx_bound, Ny_bound, Nz_bound
+#     Nx_bound, Ny_bound, Nz_bound = Nx - 2 * st, Ny - 2 * st, Nz - 2 * st  # precalculated index range
 
-    z = -st
-    while z < Nz_bound:
-        z += st
-        z_st = z + st
+#     z = -st
+#     while z < Nz_bound:
+#         z += st
+#         z_st = z + st
 
-        cell.new_z_value()  # Indicate that we enter a new layer
-        y = -st
-        while y < Ny_bound:
-            y += st
-            y_st = y + st
+#         cell.new_z_value()  # Indicate that we enter a new layer
+#         y = -st
+#         while y < Ny_bound:
+#             y += st
+#             y_st = y + st
 
-            x = -st
-            while x < Nx_bound:
-                x += st
-                x_st = x + st
-                if no_mask or mask[z_st, y_st, x_st]:
-                    # Initialize cell
-                    cell.set_cube(isovalue, x, y, z, st,
-                        im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
-                        im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x] )
+#             x = -st
+#             while x < Nx_bound:
+#                 x += st
+#                 x_st = x + st
+#                 if no_mask or mask[z_st, y_st, x_st]:
+#                     # Initialize cell
+#                     cell.set_cube(isovalue, x, y, z, st,
+#                         im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
+#                         im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x] )
 
-                    # Do classic!
-                    if classic:
-                        # Determine number of vertices
-                        nt = 0
-                        while luts.CASESCLASSIC.get2(cell.index, 3*nt) != -1:
-                            nt += 1
-                        # Add triangles
-                        if nt > 0:
-                            cell.add_triangles(luts.CASESCLASSIC, cell.index, nt)
-                    else:
-                        # Get case, if non-nul, enter the big switch
-                        case = luts.CASES.get2(cell.index, 0)
-                        if case > 0:
-                            config = luts.CASES.get2(cell.index, 1)
-                            the_big_switch(luts, cell, case, config)
+#                     # Do classic!
+#                     if classic:
+#                         # Determine number of vertices
+#                         nt = 0
+#                         while luts.CASESCLASSIC.get2(cell.index, 3*nt) != -1:
+#                             nt += 1
+#                         # Add triangles
+#                         if nt > 0:
+#                             cell.add_triangles(luts.CASESCLASSIC, cell.index, nt)
+#                     else:
+#                         # Get case, if non-nul, enter the big switch
+#                         case = luts.CASES.get2(cell.index, 0)
+#                         if case > 0:
+#                             config = luts.CASES.get2(cell.index, 1)
+#                             the_big_switch(luts, cell, case, config)
 
-    # Done
-    return cell.get_vertices(), cell.get_faces(), cell.get_normals(), cell.get_values()
+#     # Done
+#     return cell.get_vertices(), cell.get_faces(), cell.get_normals(), cell.get_values()
 
 
 
 def marching_cubes_udf(float[:, :, :] im not None, float[:, :, :, :] grads not None,
                    LutProvider luts, int st=1, int classic=0,
                    np.ndarray[np.npy_bool, ndim=3, cast=True] mask=None):
-    """ marching_cubes(im, grads, double isovalue, LutProvider luts, int st=1, int classic=0)
+    """ marching_cubes(im, double isovalue, LutProvider luts, int st=1, int classic=0)
     Main entry to apply marching cubes.
 
     Masked version of marching cubes. This function will check a
@@ -1026,11 +1133,17 @@ def marching_cubes_udf(float[:, :, :] im not None, float[:, :, :, :] grads not N
     # Create cell to use throughout
     cdef Cell cell = Cell(luts, Nx, Ny, Nz)
 
+    # Create a 3D matrix to store signed im values
+    cdef float[:,:,:] signed_im = np.zeros((Nz, Ny, Nx), dtype=np.float32)
+    cdef bint[:,:,:] signed_im_mask = np.zeros((Nz, Ny, Nx), dtype=np.int32)
+
     # Typedef variables
-    cdef int x, y, z, x_st, y_st, z_st
+    cdef int x, y, z, x_st, y_st, z_st, xi, yi, zi, x_i, y_i, z_i
+    cdef int dir_x, dir_y, dir_z, cur_x_i, cur_y_i, cur_z_i
     cdef int nt
     cdef int case, config, subconfig
     cdef bint no_mask = mask is None
+    cdef double v0, v1, v2, v3, v4, v5, v6, v7
     # Unfortunately specifying a step in range() significantly degrades
     # performance. Therefore we use a while loop.
     # we have:  max_x = Nx_bound + st + st - 1
@@ -1039,91 +1152,658 @@ def marching_cubes_udf(float[:, :, :] im not None, float[:, :, :, :] grads not N
     assert st > 0
     cdef int Nx_bound, Ny_bound, Nz_bound
     Nx_bound, Ny_bound, Nz_bound = Nx - 2 * st, Ny - 2 * st, Nz - 2 * st  # precalculated index range
-    cdef float[:] base_vec
+    cdef float[:] base_vec = np.empty((3), dtype=np.float32)
 
-    cdef float avg_cube_val
-    cdef float max_cube_val
-    cdef np.ndarray inwards_facing_normals_ref= np.array([[[[1., 1., 1.],
-                                        [1., 1., -1.]],
-                                        [[1., -1., 1.],
-                                        [1., -1., -1.]]],
-                                        [[[-1., 1., 1.],
-                                        [-1., 1., -1.]],
-                                        [[-1., -1., 1.],
-                                        [-1., -1., -1.]]]], dtype=np.float32)
-    cdef int inwards_facing_normals_bool
+    cdef float avg_cube_val_thresh = 1.05 * voxel_size
+    cdef float max_cube_val_thresh = 1.74 * voxel_size
 
+    # BFS data structures
+    cdef bint[:,:,:] visited = np.zeros((Nz, Ny, Nx), dtype=np.int32)
 
-    z = -st
-    while z < Nz_bound:
-        z += st
-        z_st = z + st
+    # cdef list queue = []
+    cdef deque[(int,int,int)] queue
+    cdef deque[(int,int,int)] unsure_cases_queue
+    cdef deque[(int,int,int)] non_trivial_mc_cases_queue
+    cdef (int, int, int) current_tuple
 
-        cell.new_z_value()  # Indicate that we enter a new layer
-        y = -st
-        while y < Ny_bound:
-            y += st
-            y_st = y + st
+    cdef array.array sign_vs = array.array('f', [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    cdef array.array visited_vs = array.array('i', [0, 0, 0, 0, 0, 0, 0, 0])
+    cdef int cube_sign
+    
+    cdef int total_cubes = 0
+    cdef int connected_components = 0
 
-            x = -st
-            while x < Nx_bound:
-                x += st
-                x_st = x + st
-                if no_mask or mask[z_st, y_st, x_st]:
+    cdef array.array vertex_index_array_z
+    cdef array.array vertex_index_array_y
+    cdef array.array vertex_index_array_x
+
+    cdef array.array directions_z = array.array('i', [st, -st, 0, 0, 0, 0])
+    cdef array.array directions_y = array.array('i', [0, 0, st, -st, 0, 0])
+    cdef array.array directions_x = array.array('i', [0, 0, 0, 0, st, -st])
+
+    cdef int max_distance = 1
+    cdef int max_distance_temp
+
+    cdef float unsure_cases_thresh = 0.707
+    cdef bint change_cube
+
+    cdef int i, v_index, dir_index
+
+    cdef bint unsure_cases_visit_neighbours
+
+    # Raster scan of the whole 3D grid
+    zi = -st
+    while zi < Nz_bound:
+        zi += st
+
+        yi = -st
+        while yi < Ny_bound:
+            yi += st
+
+            xi = -st
+            while xi < Nx_bound:
+                xi += st
+
+                z, y, x = zi, yi, xi
+                
+                z_st = z+st
+                y_st = y+st
+                x_st = x+st
+
+                if visited[z,y,x] == False and (no_mask or mask[z_st, y_st, x_st]):
                     
-                    avg_cube_val = avg_cube( im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
-                                    im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x])
+                    if (avg_cube( im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
+                                    im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x]) < avg_cube_val_thresh and 
+                        max_cube( im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
+                                    im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x]) <= max_cube_val_thresh):
+                        
+                        vertex_index_array_z = array.array('i', [z, z,    z,    z,    z_st, z_st, z_st, z_st])
+                        vertex_index_array_y = array.array('i', [y, y,    y_st, y_st, y,    y,    y_st, y_st])
+                        vertex_index_array_x = array.array('i', [x, x_st, x_st, x,    x,    x_st, x_st, x])
 
-                    max_cube_val = max_cube( im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
-                                    im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x])
+                        # The following block follows this pseudocode and lets 
+                        # the nearby vertices vote for the sign of each of the 
+                        # vertices of current cube
 
-                    if avg_cube_val < 1.05 * voxel_size and max_cube_val <= 1.74 * voxel_size:
-                        # Choose base vector for the dot product that is not (0,0,0)
-                        # in a corner of the cube
-                        if not non_zero_norm(grads[z,y,x]) == 0:
-                            base_vec = grads[z,y,x]
-                        elif not non_zero_norm(grads[z,y,x_st]) == 0:
-                            base_vec = grads[z,y,x_st]
-                        elif not non_zero_norm(grads[z,y_st,x]) == 0:
-                            base_vec = grads[z,y_st,x]
-                        elif not non_zero_norm(grads[z,y_st,x_st]) == 0:
-                            base_vec = grads[z,y_st,x_st]
-                        elif not non_zero_norm(grads[z_st,y,x]) == 0:
-                            base_vec = grads[z_st,y,x]
-                        elif not non_zero_norm(grads[z_st,y,x_st]) == 0:
-                            base_vec = grads[z_st,y,x_st]
-                        elif not non_zero_norm(grads[z_st,y_st,x]) == 0:
-                            base_vec = grads[z_st,y_st,x]
-                        elif not non_zero_norm(grads[z_st,y_st,x_st]) == 0:
-                            base_vec = grads[z_st,y_st,x_st]
-                        # else:
-                        #     print('all 0 vec...')
-                    
-                        # Initialize cell
-                        cell.set_cube(0.0, x, y, z, st,
-                            my_sign(dot3(base_vec, grads[z   ,y, x])) * im[z   ,y, x],
-                            my_sign(dot3(base_vec, grads[z   ,y, x_st])) * im[z   ,y, x_st],
-                            my_sign(dot3(base_vec, grads[z   ,y_st, x_st])) * im[z   ,y_st, x_st],
-                            my_sign(dot3(base_vec, grads[z   ,y_st, x])) * im[z   ,y_st, x],
-                            my_sign(dot3(base_vec, grads[z_st,y, x])) * im[z_st,y, x],
-                            my_sign(dot3(base_vec, grads[z_st,y, x_st])) * im[z_st,y, x_st],
-                            my_sign(dot3(base_vec, grads[z_st,y_st, x_st])) * im[z_st,y_st, x_st],
-                            my_sign(dot3(base_vec, grads[z_st,y_st, x])) * im[z_st,y_st, x] )
+                        #for each non-computed non-zero vertex v
+                            #for each of the 6 directions
+                                #for each vertex v_i along that direction, up to max-distance vertices
+                                    #if v_i hasn't been computed
+                                        #continue
+                                    #if v_i is 0 
+                                        #if max-distance is not reached
+                                            #continue
+                                        #else
+                                            #while v_i along that direction is not 0
+                                            #compute edge vote
+                                    #else
+                                        #compute edge vote
+
+                        v_index = -1
+                        change_cube = False
+                        while v_index < 7: #from 0 to 7, included
+                            v_index += 1
+                            
+                            visited_vs[v_index] = 0
+
+                            z_i = vertex_index_array_z[v_index]
+                            y_i = vertex_index_array_y[v_index]
+                            x_i = vertex_index_array_x[v_index]
+
+                            sign_vs[v_index] = 0.0
+                            
+                            #If the vertex value has been previously computed or is zero, skip it
+                            if signed_im_mask[z_i,y_i,x_i] == True:
+                                visited_vs[v_index] = 1
+                                sign_vs[v_index] = signed_im[z_i,y_i,x_i]
+                                continue
+
+                            if im[z_i,y_i,x_i] == 0.0:
+                                visited_vs[v_index] = 1
+                                continue
+                            
+                            dir_index = -1
+                            while dir_index < 5: #from 0 to 5, included
+                                dir_index += 1
+
+                                dir_z = directions_z[dir_index]
+                                dir_y = directions_y[dir_index]
+                                dir_x = directions_x[dir_index]
+
+                                i = 0
+                                max_distance_temp = max_distance
+                                while i < max_distance_temp: #from 1 to max_distance, included
+                                    i += 1
+
+                                    cur_z_i = z_i + i*dir_z
+                                    cur_y_i = y_i + i*dir_y
+                                    cur_x_i = x_i + i*dir_x
+
+                                    #If out of bounds, search on another direction
+                                    if (cur_z_i > Nz_bound or cur_z_i < 0 or
+                                        cur_y_i > Ny_bound or cur_y_i < 0 or
+                                        cur_x_i > Nx_bound or cur_x_i < 0):
+                                        break
+                                    
+                                    # If the vertex value is zero, continue to check what's beyond
+                                    if im[cur_z_i, cur_y_i, cur_x_i] == 0.0:
+                                        if i < max_distance_temp:
+                                            continue
+                                        else:
+                                            max_distance_temp = max_distance_temp + 1 #Check one vertex further away
+                                            continue
+                                    
+                                    # 1.3: If not computed during previous cubes AND not already computed during this cube, skip it
+                                    if signed_im[cur_z_i, cur_y_i, cur_x_i] == 0.0:
+                                        continue
+
+                                    # Normal case
+                                    visited_vs[v_index] += 1
+                                    sign_vs[v_index] += signed_im[cur_z_i, cur_y_i, cur_x_i] * compute_edge_vote(grads[z_i,y_i,x_i], grads[cur_z_i, cur_y_i, cur_x_i], dir_z, dir_y, dir_x)
+                                    
+                            # Set the vertex. This value is used to compute adjacent vertices, but is not considered as precomputed, so it will be computed again
+                            signed_im[z_i, y_i, x_i] = my_sign(sign_vs[v_index])
+
+
+
+
+                        # Compute and use anchor gradient only when needed (when some vertices have no votes)
+                        if not (visited_vs[0] >= 1 and visited_vs[1] >= 1 and visited_vs[2] >= 1 and visited_vs[3] >= 1 and visited_vs[4] >= 1 and visited_vs[5] >= 1 and visited_vs[6] >= 1 and visited_vs[7] >= 1):
+                            anchor_sign = 1.
+                            if signed_im_mask[z,y,x] and not non_zero_norm(grads[z,y,x]) == 0: #1
+                                anchor_sign = my_sign(signed_im[z,y,x])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x][0], grads[z,y,x][1], grads[z,y,x][2]
+                            elif signed_im_mask[z,y,x_st] and not non_zero_norm(grads[z,y,x_st]) == 0: #2
+                                anchor_sign = my_sign(signed_im[z,y,x_st])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x_st][0], grads[z,y,x_st][1], grads[z,y,x_st][2]
+                            elif signed_im_mask[z,y_st,x] and not non_zero_norm(grads[z,y_st,x]) == 0: #4
+                                anchor_sign = my_sign(signed_im[z,y_st,x])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x][0], grads[z,y_st,x][1], grads[z,y_st,x][2]
+                            elif signed_im_mask[z,y_st,x_st] and not non_zero_norm(grads[z,y_st,x_st]) == 0: #3
+                                anchor_sign = my_sign(signed_im[z,y_st,x_st])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x_st][0], grads[z,y_st,x_st][1], grads[z,y_st,x_st][2]
+                            elif signed_im_mask[z_st,y,x] and not non_zero_norm(grads[z_st,y,x]) == 0: #5
+                                anchor_sign = my_sign(signed_im[z_st,y,x])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x][0], grads[z_st,y,x][1], grads[z_st,y,x][2]
+                            elif signed_im_mask[z_st,y,x_st] and not non_zero_norm(grads[z_st,y,x_st]) == 0: #6
+                                anchor_sign = my_sign(signed_im[z_st,y,x_st])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x_st][0], grads[z_st,y,x_st][1], grads[z_st,y,x_st][2]
+                            elif signed_im_mask[z_st,y_st,x] and not non_zero_norm(grads[z_st,y_st,x]) == 0: #8
+                                anchor_sign = my_sign(signed_im[z_st,y_st,x])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x][0], grads[z_st,y_st,x][1], grads[z_st,y_st,x][2]
+                            elif signed_im_mask[z_st,y_st,x_st] and not non_zero_norm(grads[z_st,y_st,x_st]) == 0: #7
+                                anchor_sign = my_sign(signed_im[z_st,y_st,x_st])
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x_st][0], grads[z_st,y_st,x_st][1], grads[z_st,y_st,x_st][2]
+                        
+                            elif not non_zero_norm(grads[z,y,x]) == 0: #1
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x][0], grads[z,y,x][1], grads[z,y,x][2]
+                            elif not non_zero_norm(grads[z,y,x_st]) == 0: #2
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x_st][0], grads[z,y,x_st][1], grads[z,y,x_st][2]
+                            elif not non_zero_norm(grads[z,y_st,x]) == 0: #4
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x][0], grads[z,y_st,x][1], grads[z,y_st,x][2]
+                            elif not non_zero_norm(grads[z,y_st,x_st]) == 0: #3
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x_st][0], grads[z,y_st,x_st][1], grads[z,y_st,x_st][2]
+                            elif not non_zero_norm(grads[z_st,y,x]) == 0: #5
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x][0], grads[z_st,y,x][1], grads[z_st,y,x][2]
+                            elif not non_zero_norm(grads[z_st,y,x_st]) == 0: #6
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x_st][0], grads[z_st,y,x_st][1], grads[z_st,y,x_st][2]
+                            elif not non_zero_norm(grads[z_st,y_st,x]) == 0: #8
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x][0], grads[z_st,y_st,x][1], grads[z_st,y_st,x][2]
+                            elif not non_zero_norm(grads[z_st,y_st,x_st]) == 0: #7
+                                base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x_st][0], grads[z_st,y_st,x_st][1], grads[z_st,y_st,x_st][2]
+                            else:
+                                print('all 0 vec...')
+
+                            base_vec[0], base_vec[1], base_vec[2] = anchor_sign * base_vec[0], anchor_sign * base_vec[1], anchor_sign * base_vec[2]
+
+                            if visited_vs[0] == 0:
+                                signed_im[z,y,x] = my_sign(dot3(base_vec, grads[z   ,y, x]))
+                            if visited_vs[1] == 0:
+                                signed_im[z,y,x_st] = my_sign(dot3(base_vec, grads[z   ,y, x_st]))
+                            if visited_vs[2] == 0:
+                                signed_im[z,y_st,x_st] = my_sign(dot3(base_vec, grads[z   ,y_st, x_st]))
+                            if visited_vs[3] == 0:
+                                signed_im[z,y_st,x] = my_sign(dot3(base_vec, grads[z   ,y_st, x]))
+                            if visited_vs[4] == 0:
+                                signed_im[z_st,y,x] = my_sign(dot3(base_vec, grads[z_st,y, x]))
+                            if visited_vs[5] == 0:
+                                signed_im[z_st,y,x_st] = my_sign(dot3(base_vec, grads[z_st,y, x_st]))
+                            if visited_vs[6] == 0:
+                                signed_im[z_st,y_st,x_st] = my_sign(dot3(base_vec, grads[z_st,y_st, x_st]))
+                            if visited_vs[7] == 0:
+                                signed_im[z_st,y_st,x] = my_sign(dot3(base_vec, grads[z_st,y_st, x]))
+                            
+                        
+                        v0 = signed_im[z,y,x] * im[z   ,y, x]
+                        v1 = signed_im[z,y,x_st] * im[z   ,y, x_st]
+                        v2 = signed_im[z,y_st,x_st] * im[z   ,y_st, x_st]
+                        v3 = signed_im[z,y_st,x] * im[z   ,y_st, x]
+                        v4 = signed_im[z_st,y,x] * im[z_st,y, x]
+                        v5 = signed_im[z_st,y,x_st] * im[z_st,y, x_st]
+                        v6 = signed_im[z_st,y_st,x_st] * im[z_st,y_st, x_st]
+                        v7 = signed_im[z_st,y_st,x] * im[z_st,y_st, x]
+
+                        cell.set_cube(0.0, x, y, z, st, v0, v1, v2, v3, v4, v5, v6, v7)
+
+                        signed_im_mask[z,y,x] = True
+                        signed_im_mask[z,y,x_st] = True
+                        signed_im_mask[z,y_st,x_st] = True
+                        signed_im_mask[z,y_st,x] = True
+                        signed_im_mask[z_st,y,x] = True
+                        signed_im_mask[z_st,y,x_st] = True
+                        signed_im_mask[z_st,y_st,x_st] = True
+                        signed_im_mask[z_st,y_st,x] = True
+
 
                         # Get case, if non-nul, enter the big switch
                         case = luts.CASES.get2(cell.index, 0)
                         if case > 0:
-                            inwards_facing_normals_bool = inwards_facing_normals(inwards_facing_normals_ref, 
-                                                            grads[z   ,y,x], grads[z   ,y,x_st], grads[z   ,y_st,x_st], grads[z   ,y_st,x],
-                                                            grads[z_st,y,x], grads[z_st,y,x_st], grads[z_st,y_st,x_st], grads[z_st,y_st,x])
-                            if inwards_facing_normals_bool:
-                                config = luts.CASES.get2(cell.index, 1)
-                                the_big_switch(luts, cell, case, config)
+                            
+                            config = luts.CASES.get2(cell.index, 1)
+                            visited[z,y,x] = True
+
+                            the_big_switch(luts, cell, case, config)
+
+                            if x_st < Nx_bound:
+                                queue.push_back((z,y,x_st))
+                            if y_st < Ny_bound:
+                                queue.push_back((z,y_st,x))
+                            if x-st >= 0:
+                                queue.push_back((z,y,x-st))
+                            if y-st >= 0:
+                                queue.push_back((z,y-st,x))
+                            if z-st >= 0:
+                                queue.push_back((z-st,y,x))
+                            if z_st < Nz_bound:
+                                queue.push_back((z_st,y,x))
 
 
-    # Done
+                        else:
+                            visited[z,y,x] = True
+                            continue
+                    else:
+                        continue
+                else:
+                    continue
+
+                
+                # If reaching here, it means that a cube has been visited and a face has been produced.
+                # We now use this cube as the starting point and start the breadth-first exploration.
+                
+                unsure_cases_visit_neighbours = True
+                while queue.empty() == False or unsure_cases_queue.empty() == False or non_trivial_mc_cases_queue.empty() == False:
+                    
+                    if queue.empty():
+                        if unsure_cases_queue.empty():
+                            current_tuple = non_trivial_mc_cases_queue.front()
+                            non_trivial_mc_cases_queue.pop_front()
+                        else:
+                            current_tuple = unsure_cases_queue.front()
+                            
+                            # If a cube is taken from the queue with low threshold cases, compute first its neighbors then the cube itself
+                            # When visiting neighbours we set unsure_cases_visit_neighbours to False, so that such neighbours are treated
+                            # differently: no faces is computed from them, and they do not take part to the breadth-first exploration. 
+                            # (Note: they could still be part of the search and thus produce faces if they are visited again during the normal exploration)
+                            # After visiting such cubes, we re-visit the unsure case that requested them to increase its reliability.
+                            if unsure_cases_visit_neighbours:
+
+                                z, y, x = current_tuple[0], current_tuple[1], current_tuple[2]
+
+                                if visited[z,y,x] == True:
+                                    unsure_cases_queue.pop_front()
+                                    continue
+                                
+                                z_st = z+st
+                                y_st = y+st
+                                x_st = x+st
+                                
+                                if x_st < Nx_bound:
+                                    queue.push_back((z,y,x_st))
+                                if y_st < Ny_bound:
+                                    queue.push_back((z,y_st,x))
+                                if x-st >= 0:
+                                    queue.push_back((z,y,x-st))
+                                if y-st >= 0:
+                                    queue.push_back((z,y-st,x))
+                                if z-st >= 0:
+                                    queue.push_back((z-st,y,x))
+                                if z_st < Nz_bound:
+                                    queue.push_back((z_st,y,x))
+
+                                unsure_cases_visit_neighbours = False
+                                continue
+                            
+                            else:
+                                unsure_cases_queue.pop_front()
+                                unsure_cases_visit_neighbours = True
+
+                    else:
+                        current_tuple = queue.front()
+                        queue.pop_front()
+
+
+                    z, y, x = current_tuple[0], current_tuple[1], current_tuple[2]
+                    
+                    z_st = z+st
+                    y_st = y+st
+                    x_st = x+st
+
+                    if visited[z,y,x] == False and (no_mask or mask[z_st, y_st, x_st]):
+
+                        if (avg_cube( im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
+                                        im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x]) < avg_cube_val_thresh and 
+                            max_cube( im[z   ,y, x], im[z   ,y, x_st], im[z   ,y_st, x_st], im[z   ,y_st, x],
+                                        im[z_st,y, x], im[z_st,y, x_st], im[z_st,y_st, x_st], im[z_st,y_st, x]) <= max_cube_val_thresh):
+                            
+                            vertex_index_array_z = array.array('i', [z, z,    z,    z,    z_st, z_st, z_st, z_st])
+                            vertex_index_array_y = array.array('i', [y, y,    y_st, y_st, y,    y,    y_st, y_st])
+                            vertex_index_array_x = array.array('i', [x, x_st, x_st, x,    x,    x_st, x_st, x])
+
+
+                            # The following block follows this pseudocode and lets 
+                            # the nearby vertices vote for the sign of each of the 
+                            # vertices of current cube
+
+                            #for each non-computed non-zero vertex v
+                                #for each of the 6 directions
+                                    #for each vertex v_i along that direction, up to max-distance vertices
+                                        #if v_i hasn't been computed
+                                            #continue
+                                        #if v_i is 0 
+                                            #if max-distance is not reached
+                                                #continue
+                                            #else
+                                                #while v_i along that direction is not 0
+                                                #compute edge vote
+                                        #else
+                                            #compute edge vote
+
+                            v_index = -1
+                            change_cube = False
+                            while v_index < 7: #from 0 to 7, included
+                                v_index += 1
+                                
+                                visited_vs[v_index] = 0
+
+                                z_i = vertex_index_array_z[v_index]
+                                y_i = vertex_index_array_y[v_index]
+                                x_i = vertex_index_array_x[v_index]
+
+                                sign_vs[v_index] = 0.0
+                                
+                                #If the vertex value has been previously computed or is zero, skip it
+                                if signed_im_mask[z_i,y_i,x_i] == True:
+                                    visited_vs[v_index] = 1
+                                    sign_vs[v_index] = signed_im[z_i,y_i,x_i]
+                                    continue
+
+                                if im[z_i,y_i,x_i] == 0.0:
+                                    visited_vs[v_index] = 1
+                                    continue
+                                
+                                dir_index = -1
+                                while dir_index < 5: #from 0 to 5, included
+                                    dir_index += 1
+
+                                    dir_z = directions_z[dir_index]
+                                    dir_y = directions_y[dir_index]
+                                    dir_x = directions_x[dir_index]
+
+                                    i = 0
+                                    max_distance_temp = max_distance
+                                    while i < max_distance_temp: #from 1 to max_distance, included
+                                        i += 1
+
+                                        cur_z_i = z_i + i*dir_z
+                                        cur_y_i = y_i + i*dir_y
+                                        cur_x_i = x_i + i*dir_x
+
+                                        #If out of bounds, search on another direction
+                                        if (cur_z_i > Nz_bound or cur_z_i < 0 or
+                                            cur_y_i > Ny_bound or cur_y_i < 0 or
+                                            cur_x_i > Nx_bound or cur_x_i < 0):
+                                            break
+                                        
+                                        # If the vertex value is zero, continue to check what's beyond
+                                        if im[cur_z_i, cur_y_i, cur_x_i] == 0.0:
+                                            if i < max_distance_temp:
+                                                continue
+                                            else:
+                                                max_distance_temp = max_distance_temp + 1 #Check one vertex further away
+                                                continue
+                                        
+                                        # 1.3: If not computed during previous cubes AND not already computed during this cube, skip it
+                                        if signed_im[cur_z_i, cur_y_i, cur_x_i] == 0.0:
+                                            continue
+
+                                        # Normal case
+                                        visited_vs[v_index] += 1
+                                        sign_vs[v_index] += signed_im[cur_z_i, cur_y_i, cur_x_i] * compute_edge_vote(grads[z_i,y_i,x_i], grads[cur_z_i, cur_y_i, cur_x_i], dir_z, dir_y, dir_x)
+                                        
+                                # If the sign of one vertex is not sure enough, put the current cube into a lower priority queue to be computed later.
+                                if visited_vs[v_index] >= 1 and abs(sign_vs[v_index]) / visited_vs[v_index] < unsure_cases_thresh and (queue.empty() == False):
+                                    if unsure_cases_visit_neighbours == True:
+                                        unsure_cases_queue.push_back((z,y,x))
+                                    change_cube = True
+                                    break
+                                
+                                # Set the vertex. This value is used to compute adjacent vertices, but is not considered as precomputed, so it will be computed again
+                                signed_im[z_i, y_i, x_i] = my_sign(sign_vs[v_index])
+
+                            if change_cube:
+                                continue
+
+
+                            # Compute and use anchor gradient only when needed (when some vertices have no votes)
+                            if not (visited_vs[0] >= 1 and visited_vs[1] >= 1 and visited_vs[2] >= 1 and visited_vs[3] >= 1 and visited_vs[4] >= 1 and visited_vs[5] >= 1 and visited_vs[6] >= 1 and visited_vs[7] >= 1):
+                                anchor_sign = 1.
+                                if signed_im_mask[z,y,x] and not non_zero_norm(grads[z,y,x]) == 0: #1
+                                    anchor_sign = my_sign(signed_im[z,y,x])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x][0], grads[z,y,x][1], grads[z,y,x][2]
+                                elif signed_im_mask[z,y,x_st] and not non_zero_norm(grads[z,y,x_st]) == 0: #2
+                                    anchor_sign = my_sign(signed_im[z,y,x_st])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x_st][0], grads[z,y,x_st][1], grads[z,y,x_st][2]
+                                elif signed_im_mask[z,y_st,x] and not non_zero_norm(grads[z,y_st,x]) == 0: #4
+                                    anchor_sign = my_sign(signed_im[z,y_st,x])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x][0], grads[z,y_st,x][1], grads[z,y_st,x][2]
+                                elif signed_im_mask[z,y_st,x_st] and not non_zero_norm(grads[z,y_st,x_st]) == 0: #3
+                                    anchor_sign = my_sign(signed_im[z,y_st,x_st])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x_st][0], grads[z,y_st,x_st][1], grads[z,y_st,x_st][2]
+                                elif signed_im_mask[z_st,y,x] and not non_zero_norm(grads[z_st,y,x]) == 0: #5
+                                    anchor_sign = my_sign(signed_im[z_st,y,x])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x][0], grads[z_st,y,x][1], grads[z_st,y,x][2]
+                                elif signed_im_mask[z_st,y,x_st] and not non_zero_norm(grads[z_st,y,x_st]) == 0: #6
+                                    anchor_sign = my_sign(signed_im[z_st,y,x_st])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x_st][0], grads[z_st,y,x_st][1], grads[z_st,y,x_st][2]
+                                elif signed_im_mask[z_st,y_st,x] and not non_zero_norm(grads[z_st,y_st,x]) == 0: #8
+                                    anchor_sign = my_sign(signed_im[z_st,y_st,x])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x][0], grads[z_st,y_st,x][1], grads[z_st,y_st,x][2]
+                                elif signed_im_mask[z_st,y_st,x_st] and not non_zero_norm(grads[z_st,y_st,x_st]) == 0: #7
+                                    anchor_sign = my_sign(signed_im[z_st,y_st,x_st])
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x_st][0], grads[z_st,y_st,x_st][1], grads[z_st,y_st,x_st][2]
+                            
+                                elif not non_zero_norm(grads[z,y,x]) == 0: #1
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x][0], grads[z,y,x][1], grads[z,y,x][2]
+                                elif not non_zero_norm(grads[z,y,x_st]) == 0: #2
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y,x_st][0], grads[z,y,x_st][1], grads[z,y,x_st][2]
+                                elif not non_zero_norm(grads[z,y_st,x]) == 0: #4
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x][0], grads[z,y_st,x][1], grads[z,y_st,x][2]
+                                elif not non_zero_norm(grads[z,y_st,x_st]) == 0: #3
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z,y_st,x_st][0], grads[z,y_st,x_st][1], grads[z,y_st,x_st][2]
+                                elif not non_zero_norm(grads[z_st,y,x]) == 0: #5
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x][0], grads[z_st,y,x][1], grads[z_st,y,x][2]
+                                elif not non_zero_norm(grads[z_st,y,x_st]) == 0: #6
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y,x_st][0], grads[z_st,y,x_st][1], grads[z_st,y,x_st][2]
+                                elif not non_zero_norm(grads[z_st,y_st,x]) == 0: #8
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x][0], grads[z_st,y_st,x][1], grads[z_st,y_st,x][2]
+                                elif not non_zero_norm(grads[z_st,y_st,x_st]) == 0: #7
+                                    base_vec[0], base_vec[1], base_vec[2] = grads[z_st,y_st,x_st][0], grads[z_st,y_st,x_st][1], grads[z_st,y_st,x_st][2]
+                                else:
+                                    print('all 0 vec...')
+
+                                base_vec[0], base_vec[1], base_vec[2] = anchor_sign * base_vec[0], anchor_sign * base_vec[1], anchor_sign * base_vec[2]
+
+                                # If the sign of one vertex is not sure enough, put the current cube into a lower priority queue of unsure cases to be computed later.
+                                # This behaviour is not applied to the neighbours of unsure cases
+                                if unsure_cases_visit_neighbours == True and queue.empty() == False:
+                                    if visited_vs[0] == 0:
+                                        sign_vs[0] = dot3(base_vec, grads[z   ,y, x])
+                                        if abs(sign_vs[0]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z,y,x] = my_sign(sign_vs[0])
+                                    if visited_vs[1] == 0:
+                                        sign_vs[1] = dot3(base_vec, grads[z   ,y, x_st])
+                                        if abs(sign_vs[1]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z,y,x_st] = my_sign(sign_vs[1])
+                                    if visited_vs[2] == 0:
+                                        sign_vs[2] = dot3(base_vec, grads[z   ,y_st, x_st])
+                                        if abs(sign_vs[2]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z,y_st,x_st] = my_sign(sign_vs[2])
+                                    if visited_vs[3] == 0:
+                                        sign_vs[3] = dot3(base_vec, grads[z   ,y_st, x])
+                                        if abs(sign_vs[3]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z,y_st,x] = my_sign(sign_vs[3])
+                                    if visited_vs[4] == 0:
+                                        sign_vs[4] = dot3(base_vec, grads[z_st,y, x])
+                                        if abs(sign_vs[4]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z_st,y,x] = my_sign(sign_vs[4])
+                                    if visited_vs[5] == 0:
+                                        sign_vs[5] = dot3(base_vec, grads[z_st,y, x_st])
+                                        if abs(sign_vs[5]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z_st,y,x_st] = my_sign(sign_vs[5])
+                                    if visited_vs[6] == 0:
+                                        sign_vs[6] = dot3(base_vec, grads[z_st,y_st, x_st])
+                                        if abs(sign_vs[6]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z_st,y_st,x_st] = my_sign(sign_vs[6])
+                                    if visited_vs[7] == 0:
+                                        sign_vs[7] = dot3(base_vec, grads[z_st,y_st, x])
+                                        if abs(sign_vs[7]) < unsure_cases_thresh:
+                                            unsure_cases_queue.push_back((z,y,x))
+                                            continue
+                                        signed_im[z_st,y_st,x] = my_sign(sign_vs[7])
+                                else:
+                                    if visited_vs[0] == 0:
+                                        signed_im[z,y,x] = my_sign(dot3(base_vec, grads[z   ,y, x]))
+                                    if visited_vs[1] == 0:
+                                        signed_im[z,y,x_st] = my_sign(dot3(base_vec, grads[z   ,y, x_st]))
+                                    if visited_vs[2] == 0:
+                                        signed_im[z,y_st,x_st] = my_sign(dot3(base_vec, grads[z   ,y_st, x_st]))
+                                    if visited_vs[3] == 0:
+                                        signed_im[z,y_st,x] = my_sign(dot3(base_vec, grads[z   ,y_st, x]))
+                                    if visited_vs[4] == 0:
+                                        signed_im[z_st,y,x] = my_sign(dot3(base_vec, grads[z_st,y, x]))
+                                    if visited_vs[5] == 0:
+                                        signed_im[z_st,y,x_st] = my_sign(dot3(base_vec, grads[z_st,y, x_st]))
+                                    if visited_vs[6] == 0:
+                                        signed_im[z_st,y_st,x_st] = my_sign(dot3(base_vec, grads[z_st,y_st, x_st]))
+                                    if visited_vs[7] == 0:
+                                        signed_im[z_st,y_st,x] = my_sign(dot3(base_vec, grads[z_st,y_st, x]))
+                                
+                            
+                            
+                            if unsure_cases_visit_neighbours == True:
+                                v0 = signed_im[z,y,x] * im[z   ,y, x]
+                                v1 = signed_im[z,y,x_st] * im[z   ,y, x_st]
+                                v2 = signed_im[z,y_st,x_st] * im[z   ,y_st, x_st]
+                                v3 = signed_im[z,y_st,x] * im[z   ,y_st, x]
+                                v4 = signed_im[z_st,y,x] * im[z_st,y, x]
+                                v5 = signed_im[z_st,y,x_st] * im[z_st,y, x_st]
+                                v6 = signed_im[z_st,y_st,x_st] * im[z_st,y_st, x_st]
+                                v7 = signed_im[z_st,y_st,x] * im[z_st,y_st, x]
+
+                                cell.set_cube(0.0, x, y, z, st, v0, v1, v2, v3, v4, v5, v6, v7)
+
+                                signed_im_mask[z,y,x] = True
+                                signed_im_mask[z,y,x_st] = True
+                                signed_im_mask[z,y_st,x_st] = True
+                                signed_im_mask[z,y_st,x] = True
+                                signed_im_mask[z_st,y,x] = True
+                                signed_im_mask[z_st,y,x_st] = True
+                                signed_im_mask[z_st,y_st,x_st] = True
+                                signed_im_mask[z_st,y_st,x] = True
+
+
+                                # Get case, if non-nul, enter the big switch
+                                case = luts.CASES.get2(cell.index, 0)
+                                # If the current cube is being visited to increase the reliability of an unsure case,
+                                # no faces are created and no further neighbours are visited
+                                if case > 0:
+                                
+                                    # If the current cube is producing a non-trivial Marching Cubes configuration, 
+                                    # we leave it for later. It could otherwise produce unwanted inversions in face orientations.
+                                    if (not case in [1,2,5,8,9]) and (queue.empty() == False or unsure_cases_queue.empty() == False):
+                                        non_trivial_mc_cases_queue.push_back((z,y,x))
+                                        continue
+                                    
+                                    config = luts.CASES.get2(cell.index, 1)
+                                    if check_the_big_switch(luts, cell, case, config) >= 2:
+                                        visited[z,y,x] = True
+
+                                        the_big_switch(luts, cell, case, config)
+
+                                        if x_st < Nx_bound:
+                                            queue.push_back((z,y,x_st))
+                                        if y_st < Ny_bound:
+                                            queue.push_back((z,y_st,x))
+                                        if x-st >= 0:
+                                            queue.push_back((z,y,x-st))
+                                        if y-st >= 0:
+                                            queue.push_back((z,y-st,x))
+                                        if z-st >= 0:
+                                            queue.push_back((z-st,y,x))
+                                        if z_st < Nz_bound:
+                                            queue.push_back((z_st,y,x))
+
+                                else:
+                                    visited[z,y,x] = True
+
     return cell.get_vertices(), cell.get_faces(), cell.get_normals(), cell.get_values()
 
+
+cdef float compute_edge_vote(float[:] g1, float[:] g2, float dir_z, float dir_y, float dir_x):
+    """ Computes the edge vote
+        Assumes that one and only one among dir_z, dir_y and dir_x is not zero
+    """
+    cdef float result = 0.0
+    cdef float dir_sum = dir_z + dir_y + dir_x
+    cdef float proj_g1 
+    cdef float proj_g2
+
+    if dir_z != 0:
+        proj_g1 = g1[0]
+        proj_g2 = g2[0]
+    elif dir_y != 0:
+        proj_g1 = g1[1]
+        proj_g2 = g2[1]
+    else:
+        proj_g1 = g1[2]
+        proj_g2 = g2[2]
+
+    if dir_sum > 0:
+        if proj_g2 > 0 and proj_g1 < 0:
+            result = 1.0
+        else:
+            result = dot3(g1, g2)
+    else:
+        if proj_g2 < 0 and proj_g1 > 0:
+            result = 1.0
+        else:
+            result = dot3(g1, g2)
+    
+    return result
 
 
 cdef float my_sign(float a):
@@ -1139,6 +1819,7 @@ cdef int non_zero_norm(float[:] a):
     """ Returns True if the sum of absolute values > 0
     """
     return (abs(a[0]) + abs(a[1]) + abs(a[2])) > 0
+    # return abs(a[0]) > 0 or abs(a[1]) > 0 or abs(a[2]) > 0 #faster?
 
 
 cdef float avg_cube(float v1, float v2, float v3, float v4,
@@ -1163,56 +1844,15 @@ cdef float dot3(float[:] a, float[:] b):
     return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
 
 
-cdef int inwards_facing_normals(np.ndarray inwards_facing_normals_ref,
-                                float[:] g1, float[:] g2, float[:] g3, float[:] g4,
-                                float[:] g5, float[:] g6, float[:] g7, float[:] g8):
-    """ Return True if our heurisitic determines that normals are inwards facing
-    """
-    return (avg_cube(dot3(inwards_facing_normals_ref[0,0,0], g1) >= -0.1,
-                    dot3(inwards_facing_normals_ref[0,0,1], g2) >= -0.1,
-                    dot3(inwards_facing_normals_ref[0,1,1], g3) >= -0.1,
-                    dot3(inwards_facing_normals_ref[0,1,0], g4) >= -0.1,
-                    dot3(inwards_facing_normals_ref[1,0,0], g5) >= -0.1,
-                    dot3(inwards_facing_normals_ref[1,0,1], g6) >= -0.1,
-                    dot3(inwards_facing_normals_ref[1,1,1], g7) >= -0.1,
-                    dot3(inwards_facing_normals_ref[1,1,0], g8) >= -0.1,
-                             ) >= 2./8.)
-
-
-# cdef int inwards_facing_normals(float[:,:,:,:] inwards_facing_normals_ref,
-#                                 float[:] g1, float[:] g2, float[:] g3, float[:] g4,
-#                                 float[:] g5, float[:] g6, float[:] g7, float[:] g8):
-#     """ Return True if our heurisitic determines that normals are inwards facing
-#     """
-#     # return (avg_cube(np.dot(inwards_facing_normals_ref[0,0,0], g1),
-#     #                 np.dot(inwards_facing_normals_ref[0,0,1], g2),
-#     #                 np.dot(inwards_facing_normals_ref[0,1,1], g3),
-#     #                 np.dot(inwards_facing_normals_ref[0,1,0], g4),
-#     #                 np.dot(inwards_facing_normals_ref[1,0,0], g5),
-#     #                 np.dot(inwards_facing_normals_ref[1,0,1], g6),
-#     #                 np.dot(inwards_facing_normals_ref[1,1,1], g7),
-#     #                 np.dot(inwards_facing_normals_ref[1,1,0], g8),
-#     #                          ) >= 0.)
-#     return (avg_cube(np.dot(inwards_facing_normals_ref[0,0,0], g1) >= -0.1,
-#                     np.dot(inwards_facing_normals_ref[0,0,1], g2) >= -0.1,
-#                     np.dot(inwards_facing_normals_ref[0,1,1], g3) >= -0.1,
-#                     np.dot(inwards_facing_normals_ref[0,1,0], g4) >= -0.1,
-#                     np.dot(inwards_facing_normals_ref[1,0,0], g5) >= -0.1,
-#                     np.dot(inwards_facing_normals_ref[1,0,1], g6) >= -0.1,
-#                     np.dot(inwards_facing_normals_ref[1,1,1], g7) >= -0.1,
-#                     np.dot(inwards_facing_normals_ref[1,1,0], g8) >= -0.1,
-#                              ) >= 2./8.)
-
-
-
-cdef void the_big_switch(LutProvider luts, Cell cell, int case, int config):
+cdef bint the_big_switch(LutProvider luts, Cell cell, int case, int config):
     """ The big switch (i.e. if-statement) that I meticulously ported from
     the source code provided by Lewiner et. al.
-
     Together with all the look-up tables, this is where the magic is ...
     """
 
     cdef int subconfig = 0
+    cdef bint result = False
+
 
     # Sinatures for tests
     #test_face(cell, luts.TESTX.get1(config)):
@@ -1220,35 +1860,35 @@ cdef void the_big_switch(LutProvider luts, Cell cell, int case, int config):
     #cell.add_triangles(luts.TILINGX, config, N)
 
     if case == 1:
-        cell.add_triangles(luts.TILING1, config, 1)
+        result = cell.add_triangles(luts.TILING1, config, 1)
 
     elif case == 2:
-        cell.add_triangles(luts.TILING2, config, 2)
+        result = cell.add_triangles(luts.TILING2, config, 2)
 
     elif case == 3:
         if test_face(cell, luts.TEST3.get1(config)):
-            cell.add_triangles(luts.TILING3_2, config, 4)
+            result = cell.add_triangles(luts.TILING3_2, config, 4)
         else:
-            cell.add_triangles(luts.TILING3_1, config, 2)
+            result = cell.add_triangles(luts.TILING3_1, config, 2)
 
     elif case == 4 :
         if test_internal(cell, luts, case, config, subconfig, luts.TEST4.get1(config)):
-            cell.add_triangles(luts.TILING4_1, config, 2)
+            result = cell.add_triangles(luts.TILING4_1, config, 2)
         else:
-            cell.add_triangles(luts.TILING4_2, config, 6)
+            result = cell.add_triangles(luts.TILING4_2, config, 6)
 
     elif case == 5 :
-        cell.add_triangles(luts.TILING5, config, 3)
+        result = cell.add_triangles(luts.TILING5, config, 3)
 
     elif case == 6 :
         if test_face(cell, luts.TEST6.get2(config,0)):
-            cell.add_triangles(luts.TILING6_2, config, 5)
+            result = cell.add_triangles(luts.TILING6_2, config, 5)
         else:
             if test_internal(cell, luts, case, config, subconfig, luts.TEST6.get2(config,1)):
-                cell.add_triangles(luts.TILING6_1_1, config, 3)
+                result = cell.add_triangles(luts.TILING6_1_1, config, 3)
             else:
                 #cell.calculate_center_vertex() # v12 needed
-                cell.add_triangles(luts.TILING6_1_2, config, 9)
+                result = cell.add_triangles(luts.TILING6_1_2, config, 9)
 
     elif case == 7 :
         # Get subconfig
@@ -1256,67 +1896,67 @@ cdef void the_big_switch(LutProvider luts, Cell cell, int case, int config):
         if test_face(cell, luts.TEST7.get2(config,1)): subconfig += 2
         if test_face(cell, luts.TEST7.get2(config,2)): subconfig += 4
         # Behavior depends on subconfig
-        if subconfig == 0: cell.add_triangles(luts.TILING7_1, config, 3)
-        elif subconfig == 1: cell.add_triangles2(luts.TILING7_2, config, 0, 5)
-        elif subconfig == 2: cell.add_triangles2(luts.TILING7_2, config, 1, 5)
+        if subconfig == 0: result = cell.add_triangles(luts.TILING7_1, config, 3)
+        elif subconfig == 1: result = cell.add_triangles2(luts.TILING7_2, config, 0, 5)
+        elif subconfig == 2: result = cell.add_triangles2(luts.TILING7_2, config, 1, 5)
         elif subconfig == 3:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING7_3, config, 0, 9)
-        elif subconfig == 4: cell.add_triangles2(luts.TILING7_2, config, 2, 5)
+            result = cell.add_triangles2(luts.TILING7_3, config, 0, 9)
+        elif subconfig == 4: result = cell.add_triangles2(luts.TILING7_2, config, 2, 5)
         elif subconfig == 5:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING7_3, config, 1, 9)
+            result = cell.add_triangles2(luts.TILING7_3, config, 1, 9)
         elif subconfig == 6:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING7_3, config, 2, 9)
+            result = cell.add_triangles2(luts.TILING7_3, config, 2, 9)
         elif subconfig == 7:
             if test_internal(cell, luts, case, config, subconfig, luts.TEST7.get2(config,3)):
-                cell.add_triangles(luts.TILING7_4_2, config, 9)
+                result = cell.add_triangles(luts.TILING7_4_2, config, 9)
             else:
-                cell.add_triangles(luts.TILING7_4_1, config, 5)
+                result = cell.add_triangles(luts.TILING7_4_1, config, 5)
 
     elif case == 8 :
-        cell.add_triangles(luts.TILING8, config, 2)
+        result = cell.add_triangles(luts.TILING8, config, 2)
 
     elif case == 9 :
-        cell.add_triangles(luts.TILING9, config, 4)
+        result = cell.add_triangles(luts.TILING9, config, 4)
 
     elif case == 10 :
         if test_face(cell, luts.TEST10.get2(config,0)):
             if test_face(cell, luts.TEST10.get2(config,1)):
-                cell.add_triangles(luts.TILING10_1_1_, config, 4)
+                result = cell.add_triangles(luts.TILING10_1_1_, config, 4)
             else:
                 #cell.calculate_center_vertex() # v12 needed
-                cell.add_triangles(luts.TILING10_2, config, 8)
+                result = cell.add_triangles(luts.TILING10_2, config, 8)
         else:
             if test_face(cell, luts.TEST10.get2(config,1)):
                 #cell.calculate_center_vertex() # v12 needed
-                cell.add_triangles(luts.TILING10_2_, config, 8)
+                result = cell.add_triangles(luts.TILING10_2_, config, 8)
             else:
                 if test_internal(cell, luts, case, config, subconfig, luts.TEST10.get2(config,2)):
-                    cell.add_triangles(luts.TILING10_1_1, config, 4)
+                    result = cell.add_triangles(luts.TILING10_1_1, config, 4)
                 else:
-                    cell.add_triangles(luts.TILING10_1_2, config, 8)
+                    result = cell.add_triangles(luts.TILING10_1_2, config, 8)
 
     elif case == 11 :
-        cell.add_triangles(luts.TILING11, config, 4)
+        result = cell.add_triangles(luts.TILING11, config, 4)
 
     elif case == 12 :
         if test_face(cell, luts.TEST12.get2(config,0)):
             if test_face(cell, luts.TEST12.get2(config,1)):
-                cell.add_triangles(luts.TILING12_1_1_, config, 4)
+                result = cell.add_triangles(luts.TILING12_1_1_, config, 4)
             else:
                 #cell.calculate_center_vertex() # v12 needed
-                cell.add_triangles(luts.TILING12_2, config, 8)
+                result = cell.add_triangles(luts.TILING12_2, config, 8)
         else:
             if test_face(cell, luts.TEST12.get2(config,1)):
                 #cell.calculate_center_vertex() # v12 needed
-                cell.add_triangles(luts.TILING12_2_, config, 8)
+                result = cell.add_triangles(luts.TILING12_2_, config, 8)
             else:
                 if test_internal(cell, luts, case, config, subconfig, luts.TEST12.get2(config,2)):
-                    cell.add_triangles(luts.TILING12_1_1, config, 4)
+                    result = cell.add_triangles(luts.TILING12_1_1, config, 4)
                 else:
-                    cell.add_triangles(luts.TILING12_1_2, config, 8)
+                    result = cell.add_triangles(luts.TILING12_1_2, config, 8)
 
     elif case == 13 :
         # Calculate subconfig
@@ -1331,147 +1971,433 @@ cdef void the_big_switch(LutProvider luts, Cell cell, int case, int config):
         subconfig = luts.SUBCONFIG13.get1(subconfig)
 
         # Behavior depends on subconfig
-        if subconfig==0:    cell.add_triangles(luts.TILING13_1, config, 4)
-        elif subconfig==1:  cell.add_triangles2(luts.TILING13_2, config, 0, 6)
-        elif subconfig==2:  cell.add_triangles2(luts.TILING13_2, config, 1, 6)
-        elif subconfig==3:  cell.add_triangles2(luts.TILING13_2, config, 2, 6)
-        elif subconfig==4:  cell.add_triangles2(luts.TILING13_2, config, 3, 6)
-        elif subconfig==5:  cell.add_triangles2(luts.TILING13_2, config, 4, 6)
-        elif subconfig==6:  cell.add_triangles2(luts.TILING13_2, config, 5, 6)
+        if subconfig==0:    result = cell.add_triangles(luts.TILING13_1, config, 4)
+        elif subconfig==1:  result = cell.add_triangles2(luts.TILING13_2, config, 0, 6)
+        elif subconfig==2:  result = cell.add_triangles2(luts.TILING13_2, config, 1, 6)
+        elif subconfig==3:  result = cell.add_triangles2(luts.TILING13_2, config, 2, 6)
+        elif subconfig==4:  result = cell.add_triangles2(luts.TILING13_2, config, 3, 6)
+        elif subconfig==5:  result = cell.add_triangles2(luts.TILING13_2, config, 4, 6)
+        elif subconfig==6:  result = cell.add_triangles2(luts.TILING13_2, config, 5, 6)
         #
         elif subconfig==7:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 0, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 0, 10)
         elif subconfig==8:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 1, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 1, 10)
         elif subconfig==9:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 2, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 2, 10)
         elif subconfig==10:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 3, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 3, 10)
         elif subconfig==11:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 4, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 4, 10)
         elif subconfig==12:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 5, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 5, 10)
         elif subconfig==13:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 6, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 6, 10)
         elif subconfig==14:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 7, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 7, 10)
         elif subconfig==15:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 8, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 8, 10)
         elif subconfig==16:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 9, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 9, 10)
         elif subconfig==17:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 10, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 10, 10)
         elif subconfig==18:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3, config, 11, 10)
+            result = cell.add_triangles2(luts.TILING13_3, config, 11, 10)
         #
         elif subconfig==19:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_4, config, 0, 12)
+            result = cell.add_triangles2(luts.TILING13_4, config, 0, 12)
         elif subconfig==20:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_4, config, 1, 12)
+            result = cell.add_triangles2(luts.TILING13_4, config, 1, 12)
         elif subconfig==21:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_4, config, 2, 12)
+            result = cell.add_triangles2(luts.TILING13_4, config, 2, 12)
         elif subconfig==22:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_4, config, 3, 12)
+            result = cell.add_triangles2(luts.TILING13_4, config, 3, 12)
         #
         elif subconfig==23:
             subconfig = 0 # Note: the original source code sets the subconfig, without apparent reason
             if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
-                cell.add_triangles2(luts.TILING13_5_1, config, 0, 6)
+                result = cell.add_triangles2(luts.TILING13_5_1, config, 0, 6)
             else:
-                cell.add_triangles2(luts.TILING13_5_2, config, 0, 10)
+                result = cell.add_triangles2(luts.TILING13_5_2, config, 0, 10)
         elif subconfig==24:
             subconfig = 1
             if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
-                cell.add_triangles2(luts.TILING13_5_1, config, 1, 6)
+                result = cell.add_triangles2(luts.TILING13_5_1, config, 1, 6)
             else:
-                cell.add_triangles2(luts.TILING13_5_2, config, 1, 10)
+                result = cell.add_triangles2(luts.TILING13_5_2, config, 1, 10)
         elif subconfig==25:
             subconfig = 2 ;
             if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
-                cell.add_triangles2(luts.TILING13_5_1, config, 2, 6)
+                result = cell.add_triangles2(luts.TILING13_5_1, config, 2, 6)
             else:
-                cell.add_triangles2(luts.TILING13_5_2, config, 2, 10)
+                result = cell.add_triangles2(luts.TILING13_5_2, config, 2, 10)
         elif subconfig==26:
             subconfig = 3 ;
             if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
-                cell.add_triangles2(luts.TILING13_5_1, config, 3, 6)
+                result = cell.add_triangles2(luts.TILING13_5_1, config, 3, 6)
             else:
-                cell.add_triangles2(luts.TILING13_5_2, config, 3, 10)
+                result = cell.add_triangles2(luts.TILING13_5_2, config, 3, 10)
         #
         elif subconfig==27:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 0, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 0, 10)
         elif subconfig==28:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 1, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 1, 10)
         elif subconfig==29:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 2, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 2, 10)
         elif subconfig==30:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 3, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 3, 10)
         elif subconfig==31:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 4, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 4, 10)
         elif subconfig==32:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 5, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 5, 10)
         elif subconfig==33:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config,6, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config,6, 10)
         elif subconfig==34:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 7, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 7, 10)
         elif subconfig==35:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 8, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 8, 10)
         elif subconfig==36:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 9, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 9, 10)
         elif subconfig==37:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 10, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 10, 10)
         elif subconfig==38:
             #cell.calculate_center_vertex() # v12 needed
-            cell.add_triangles2(luts.TILING13_3_, config, 11, 10)
+            result = cell.add_triangles2(luts.TILING13_3_, config, 11, 10)
         #
         elif subconfig==39:
-            cell.add_triangles2(luts.TILING13_2_, config, 0, 6)
+            result = cell.add_triangles2(luts.TILING13_2_, config, 0, 6)
         elif subconfig==40:
-            cell.add_triangles2(luts.TILING13_2_, config, 1, 6)
+            result = cell.add_triangles2(luts.TILING13_2_, config, 1, 6)
         elif subconfig==41:
-            cell.add_triangles2(luts.TILING13_2_, config, 2, 6)
+            result = cell.add_triangles2(luts.TILING13_2_, config, 2, 6)
         elif subconfig==42:
-            cell.add_triangles2(luts.TILING13_2_, config, 3, 6)
+            result = cell.add_triangles2(luts.TILING13_2_, config, 3, 6)
         elif subconfig==43:
-            cell.add_triangles2(luts.TILING13_2_, config, 4, 6)
+            result = cell.add_triangles2(luts.TILING13_2_, config, 4, 6)
         elif subconfig==44:
-            cell.add_triangles2(luts.TILING13_2_, config, 5, 6)
+            result = cell.add_triangles2(luts.TILING13_2_, config, 5, 6)
         #
         elif subconfig==45:
-            cell.add_triangles(luts.TILING13_1_, config, 4)
+            result = cell.add_triangles(luts.TILING13_1_, config, 4)
         #
         else:
             print("Marching Cubes: Impossible case 13?" )
 
     elif case == 14 :
-        cell.add_triangles(luts.TILING14, config, 4)
+        result = cell.add_triangles(luts.TILING14, config, 4)
+        
+    return result
+
+
+
+
+
+
+
+cdef int check_the_big_switch(LutProvider luts, Cell cell, int case, int config):
+    """ CHECK The big switch (i.e. if-statement) that I meticulously ported from
+    the source code provided by Lewiner et. al.
+    Together with all the look-up tables, this is where the magic is ...
+    """
+
+    cdef int subconfig = 0
+    cdef int result = 0
+
+
+    # Sinatures for tests
+    #test_face(cell, luts.TESTX.get1(config)):
+    #test_internal(cell, luts, case, config, subconfig, luts.TESTX.get1(config)):
+    #cell.check_triangles(luts.TILINGX, config, N)
+
+    if case == 1:
+        result = cell.check_triangles(luts.TILING1, config, 1)
+
+    elif case == 2:
+        result = cell.check_triangles(luts.TILING2, config, 2)
+
+    elif case == 3:
+        if test_face(cell, luts.TEST3.get1(config)):
+            result = cell.check_triangles(luts.TILING3_2, config, 4)
+        else:
+            result = cell.check_triangles(luts.TILING3_1, config, 2)
+
+    elif case == 4 :
+        if test_internal(cell, luts, case, config, subconfig, luts.TEST4.get1(config)):
+            result = cell.check_triangles(luts.TILING4_1, config, 2)
+        else:
+            result = cell.check_triangles(luts.TILING4_2, config, 6)
+
+    elif case == 5 :
+        result = cell.check_triangles(luts.TILING5, config, 3)
+
+    elif case == 6 :
+        if test_face(cell, luts.TEST6.get2(config,0)):
+            result = cell.check_triangles(luts.TILING6_2, config, 5)
+        else:
+            if test_internal(cell, luts, case, config, subconfig, luts.TEST6.get2(config,1)):
+                result = cell.check_triangles(luts.TILING6_1_1, config, 3)
+            else:
+                #cell.calculate_center_vertex() # v12 needed
+                result = cell.check_triangles(luts.TILING6_1_2, config, 9)
+
+    elif case == 7 :
+        # Get subconfig
+        if test_face(cell, luts.TEST7.get2(config,0)): subconfig += 1
+        if test_face(cell, luts.TEST7.get2(config,1)): subconfig += 2
+        if test_face(cell, luts.TEST7.get2(config,2)): subconfig += 4
+        # Behavior depends on subconfig
+        if subconfig == 0: result = cell.check_triangles(luts.TILING7_1, config, 3)
+        elif subconfig == 1: result = cell.check_triangles2(luts.TILING7_2, config, 0, 5)
+        elif subconfig == 2: result = cell.check_triangles2(luts.TILING7_2, config, 1, 5)
+        elif subconfig == 3:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING7_3, config, 0, 9)
+        elif subconfig == 4: result = cell.check_triangles2(luts.TILING7_2, config, 2, 5)
+        elif subconfig == 5:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING7_3, config, 1, 9)
+        elif subconfig == 6:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING7_3, config, 2, 9)
+        elif subconfig == 7:
+            if test_internal(cell, luts, case, config, subconfig, luts.TEST7.get2(config,3)):
+                result = cell.check_triangles(luts.TILING7_4_2, config, 9)
+            else:
+                result = cell.check_triangles(luts.TILING7_4_1, config, 5)
+
+    elif case == 8 :
+        result = cell.check_triangles(luts.TILING8, config, 2)
+
+    elif case == 9 :
+        result = cell.check_triangles(luts.TILING9, config, 4)
+
+    elif case == 10 :
+        if test_face(cell, luts.TEST10.get2(config,0)):
+            if test_face(cell, luts.TEST10.get2(config,1)):
+                result = cell.check_triangles(luts.TILING10_1_1_, config, 4)
+            else:
+                #cell.calculate_center_vertex() # v12 needed
+                result = cell.check_triangles(luts.TILING10_2, config, 8)
+        else:
+            if test_face(cell, luts.TEST10.get2(config,1)):
+                #cell.calculate_center_vertex() # v12 needed
+                result = cell.check_triangles(luts.TILING10_2_, config, 8)
+            else:
+                if test_internal(cell, luts, case, config, subconfig, luts.TEST10.get2(config,2)):
+                    result = cell.check_triangles(luts.TILING10_1_1, config, 4)
+                else:
+                    result = cell.check_triangles(luts.TILING10_1_2, config, 8)
+
+    elif case == 11 :
+        result = cell.check_triangles(luts.TILING11, config, 4)
+
+    elif case == 12 :
+        if test_face(cell, luts.TEST12.get2(config,0)):
+            if test_face(cell, luts.TEST12.get2(config,1)):
+                result = cell.check_triangles(luts.TILING12_1_1_, config, 4)
+            else:
+                #cell.calculate_center_vertex() # v12 needed
+                result = cell.check_triangles(luts.TILING12_2, config, 8)
+        else:
+            if test_face(cell, luts.TEST12.get2(config,1)):
+                #cell.calculate_center_vertex() # v12 needed
+                result = cell.check_triangles(luts.TILING12_2_, config, 8)
+            else:
+                if test_internal(cell, luts, case, config, subconfig, luts.TEST12.get2(config,2)):
+                    result = cell.check_triangles(luts.TILING12_1_1, config, 4)
+                else:
+                    result = cell.check_triangles(luts.TILING12_1_2, config, 8)
+
+    elif case == 13 :
+        # Calculate subconfig
+        if test_face(cell, luts.TEST13.get2(config,0)): subconfig += 1
+        if test_face(cell, luts.TEST13.get2(config,1)): subconfig += 2
+        if test_face(cell, luts.TEST13.get2(config,2)): subconfig += 4
+        if test_face(cell, luts.TEST13.get2(config,3)): subconfig += 8
+        if test_face(cell, luts.TEST13.get2(config,4)): subconfig += 16
+        if test_face(cell, luts.TEST13.get2(config,5)): subconfig += 32
+
+        # Map via LUT
+        subconfig = luts.SUBCONFIG13.get1(subconfig)
+
+        # Behavior depends on subconfig
+        if subconfig==0:    result = cell.check_triangles(luts.TILING13_1, config, 4)
+        elif subconfig==1:  result = cell.check_triangles2(luts.TILING13_2, config, 0, 6)
+        elif subconfig==2:  result = cell.check_triangles2(luts.TILING13_2, config, 1, 6)
+        elif subconfig==3:  result = cell.check_triangles2(luts.TILING13_2, config, 2, 6)
+        elif subconfig==4:  result = cell.check_triangles2(luts.TILING13_2, config, 3, 6)
+        elif subconfig==5:  result = cell.check_triangles2(luts.TILING13_2, config, 4, 6)
+        elif subconfig==6:  result = cell.check_triangles2(luts.TILING13_2, config, 5, 6)
+        #
+        elif subconfig==7:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 0, 10)
+        elif subconfig==8:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 1, 10)
+        elif subconfig==9:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 2, 10)
+        elif subconfig==10:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 3, 10)
+        elif subconfig==11:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 4, 10)
+        elif subconfig==12:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 5, 10)
+        elif subconfig==13:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 6, 10)
+        elif subconfig==14:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 7, 10)
+        elif subconfig==15:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 8, 10)
+        elif subconfig==16:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 9, 10)
+        elif subconfig==17:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 10, 10)
+        elif subconfig==18:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3, config, 11, 10)
+        #
+        elif subconfig==19:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_4, config, 0, 12)
+        elif subconfig==20:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_4, config, 1, 12)
+        elif subconfig==21:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_4, config, 2, 12)
+        elif subconfig==22:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_4, config, 3, 12)
+        #
+        elif subconfig==23:
+            subconfig = 0 # Note: the original source code sets the subconfig, without apparent reason
+            if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
+                result = cell.check_triangles2(luts.TILING13_5_1, config, 0, 6)
+            else:
+                result = cell.check_triangles2(luts.TILING13_5_2, config, 0, 10)
+        elif subconfig==24:
+            subconfig = 1
+            if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
+                result = cell.check_triangles2(luts.TILING13_5_1, config, 1, 6)
+            else:
+                result = cell.check_triangles2(luts.TILING13_5_2, config, 1, 10)
+        elif subconfig==25:
+            subconfig = 2 ;
+            if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
+                result = cell.check_triangles2(luts.TILING13_5_1, config, 2, 6)
+            else:
+                result = cell.check_triangles2(luts.TILING13_5_2, config, 2, 10)
+        elif subconfig==26:
+            subconfig = 3 ;
+            if test_internal(cell, luts, case, config, subconfig, luts.TEST13.get2(config,6)):
+                result = cell.check_triangles2(luts.TILING13_5_1, config, 3, 6)
+            else:
+                result = cell.check_triangles2(luts.TILING13_5_2, config, 3, 10)
+        #
+        elif subconfig==27:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 0, 10)
+        elif subconfig==28:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 1, 10)
+        elif subconfig==29:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 2, 10)
+        elif subconfig==30:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 3, 10)
+        elif subconfig==31:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 4, 10)
+        elif subconfig==32:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 5, 10)
+        elif subconfig==33:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config,6, 10)
+        elif subconfig==34:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 7, 10)
+        elif subconfig==35:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 8, 10)
+        elif subconfig==36:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 9, 10)
+        elif subconfig==37:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 10, 10)
+        elif subconfig==38:
+            #cell.calculate_center_vertex() # v12 needed
+            result = cell.check_triangles2(luts.TILING13_3_, config, 11, 10)
+        #
+        elif subconfig==39:
+            result = cell.check_triangles2(luts.TILING13_2_, config, 0, 6)
+        elif subconfig==40:
+            result = cell.check_triangles2(luts.TILING13_2_, config, 1, 6)
+        elif subconfig==41:
+            result = cell.check_triangles2(luts.TILING13_2_, config, 2, 6)
+        elif subconfig==42:
+            result = cell.check_triangles2(luts.TILING13_2_, config, 3, 6)
+        elif subconfig==43:
+            result = cell.check_triangles2(luts.TILING13_2_, config, 4, 6)
+        elif subconfig==44:
+            result = cell.check_triangles2(luts.TILING13_2_, config, 5, 6)
+        #
+        elif subconfig==45:
+            result = cell.check_triangles(luts.TILING13_1_, config, 4)
+        #
+        else:
+            print("Marching Cubes: Impossible case 13?" )
+
+    elif case == 14 :
+        result = cell.check_triangles(luts.TILING14, config, 4)
+        
+    return result
+
+
+
+
+
+
+
 
 
 cdef int test_face(Cell cell, int face):

@@ -16,7 +16,7 @@ conda env create -f conda_env.yml
 conda activate meshudf
 ```
 
-For speed purposes, our modified version of marching cubes described in Section 3.1.1 of the paper is implemented in Cython. It is largely based on [scikit-image implementation](https://github.com/scikit-image/scikit-image/blob/main/skimage/measure/_marching_cubes_lewiner_cy.pyx) of marching cubes Lewiner. To compile the custom version for your system, please run:
+For speed purposes, our modified version of marching cubes is implemented in Cython. It is largely based on [scikit-image implementation](https://github.com/scikit-image/scikit-image/blob/main/skimage/measure/_marching_cubes_lewiner_cy.pyx) of marching cubes Lewiner. To compile the custom version for your system, please run:
 ```
 cd custom_mc
 python setup.py build_ext --inplace
