@@ -36,11 +36,11 @@ python optimize_chamfer_A_to_B.py --experiment trained_networks/udf_4_garments -
 ## Credits and citation
 Feel free to use this code for academic work, but please cite the following:
 ```
-@article{guillard2021meshudf,
-  title={MeshUDF: Fast and Differentiable Meshing of Unsigned Distance Field Networks},
-  author={Guillard, Benoit and Stella, Federico and Fua, Pascal},
-  journal={arXiv preprint arXiv:2111.14549},
-  year={2021}
+@inproceedings{guillard2022udf,
+  author = {Guillard, Benoit and Stella, Federico and Fua, Pascal},
+  title = {MeshUDF: Fast and Differentiable Meshing of Unsigned Distance Field Networks},
+  booktitle = {European Conference on Computer Vision},
+  year = {2022}
 }
 ```
 
