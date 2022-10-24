@@ -2,7 +2,7 @@
 
 <img src='gifs/optim_0_2.gif' width='350'> <img src='gifs/optim_1_3.gif' width='350'>
 
-This is the PyTorch implementation of the preprint [MeshUDF](https://arxiv.org/abs/2111.14549). We provide one dummy pre-trained UDF network and code for demonstrating our differentiable meshing procedure of open surfaces.
+This is the PyTorch implementation of the ICCV paper [MeshUDF](https://bguillard.github.io/meshudf/). We provide one dummy pre-trained UDF network and code for demonstrating our differentiable meshing procedure of open surfaces.
 
 The below instructions describe how to:
 1. [Setup the Python environment](#setup-environment)
